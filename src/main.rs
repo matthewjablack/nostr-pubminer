@@ -1,164 +1,87 @@
-use std::{env, sync::mpsc::channel, sync::mpsc::Sender, fs::File, fs::OpenOptions, io::Write, thread::sleep, time::Duration};
-use bech32::{ToBase32, Variant};
-use secp256k1::{KeyPair, XOnlyPublicKey};
+use std::{
+    env,
+    sync::{mpsc::channel, mpsc::Sender, Arc, Mutex},
+    thread,
+};
 
-fn run_thread(sender: Sender<KeyPair>) {
-    let secp = secp256k1::Secp256k1::new();
-    let mut rng = rand::rngs::OsRng::default();
+use rand::{Rng, thread_rng};
+use sha2::{Digest, Sha256};
+use std::time::Instant;
+
+fn run_thread(sender: Sender<(Vec<u8>, String)>, max_leading_69s: Arc<Mutex<u32>>) {
+    let mut rng = thread_rng();
+
     loop {
-        let secret_key = secp256k1::SecretKey::new(&mut rng);
-        sender.send(KeyPair::from_secret_key(&secp, &secret_key)).unwrap();
+        // Generate a random alphanumeric string of length 30
+        let random_string: String = (0..30)
+            .map(|_| {
+                let rand_char = rng.gen_range(0..62);
+                let character = match rand_char {
+                    0..=25 => (rand_char + 'a' as u8) as char,
+                    26..=51 => (rand_char - 26 + 'A' as u8) as char,
+                    _ => (rand_char - 52 + '0' as u8) as char,
+                };
+                character
+            })
+            .collect();
+
+        let hash = Sha256::digest(random_string.as_bytes());
+
+        let mut count_69 = 0;
+        for byte in hash.iter() {
+            if *byte == 0x69 {
+                count_69 += 1;
+            } else {
+                break;
+            }
+        }
+
+        let mut max = max_leading_69s.lock().unwrap();
+        if count_69 > *max {
+            *max = count_69;
+            sender.send((hash.to_vec(), random_string)).unwrap();
+        }
     }
 }
 
-fn filter_pubkeys(pubkey: String, filter: &str) -> bool {
-    pubkey.starts_with(filter)
-}
+
 
 fn main() {
     if env::args().len() < 3 {
-        println!("Usage: {} <filter> <threadAmount> <optional:bech32->yes>", env::args().nth(0).unwrap());
-        println!("\t Benchmark with \"benchmark\" as filter and threadAmount as the amount of iterations");
+        println!("Usage: {} <byte_to_search_for> <thread_amount>", env::args().nth(0).unwrap());
         return;
     }
-    let filter_string = env::args().nth(1).unwrap();
+    let _byte_to_search_for = env::args().nth(1).unwrap();
     let thread_amount = env::args().nth(2).unwrap().parse::<u32>().unwrap();
-    let mut bech32 = false;
-    if env::args().len() == 4 {
-        bech32 = env::args().nth(3).unwrap() == "yes";
-    }
-
-    if filter_string == "benchmark" {
-        run_benchmark(thread_amount as u128, bech32);
-        return;
-    }
 
     println!("Thread amount: {}", thread_amount);
+
     let (sender, receiver) = channel();
-    let mut senders: Vec<Sender<KeyPair>> = Vec::new();
-    for _ in 1..thread_amount {
-        senders.push(sender.clone());
-    }
-    senders.insert(0, sender);
-    
-    //Create the threads and run them
+    let max_leading_69s = Arc::new(Mutex::new(0));
     let mut threads = Vec::new();
     for i in 0..thread_amount {
         println!("Starting thread {}", i);
-        let new_sender = senders.pop().unwrap();
-        threads.push(std::thread::spawn(move || {
-            run_thread(new_sender);
+        let new_sender = sender.clone();
+        let max_leading_69s = Arc::clone(&max_leading_69s);
+        threads.push(thread::spawn(move || {
+            run_thread(new_sender, max_leading_69s);
         }));
     }
 
-    let mut output_file: File;
-    match File::open("output.csv") {
-        Ok(_) => {
-            output_file = OpenOptions::new().write(true).append(true).open("output.csv").unwrap();
-        },
-        Err(_) => {
-            output_file = File::create("output.csv").unwrap();
-        }
-    }
-    //Get the results and write them
-    let mut result_amount = 0;
+    // Get the results and print them
     loop {
         let new_result = receiver.recv();
         match new_result {
-            Ok(result) => {
-                let (pubkey_readable, _) = XOnlyPublicKey::from_keypair(&result);
-                if !bech32 {
-                    if !filter_pubkeys(pubkey_readable.to_string(), filter_string.as_str()) {
-                        continue;
-                    }
-                }
-                else {
-                    //Convert to bech32
-                    let bech_key: String = bech32::encode( //Shamefully stolen from https://github.com/grunch/rana/blob/main/src/main.rs in order to add bech32 support
-                        "npub",
-                        hex::decode(pubkey_readable.to_string()).unwrap().to_base32(),
-                        Variant::Bech32,
-                    ).unwrap();
-                    let new_filter_string = format!("npub1{}", filter_string);
-                    if !filter_pubkeys(bech_key, new_filter_string.as_str()) {
-                        continue;
-                    }
-                }
-                
-                let tmp_output = format!("{};{}\n", result.display_secret(), pubkey_readable);
-                result_amount += 1;
-                println!("{} calculated keys...", result_amount);
-                output_file.write_all(tmp_output.as_bytes()).unwrap();
-            },
-            Err(_) => {
-                sleep(Duration::from_secs(1));
+            Ok((hash, random_string)) => {
+                let max = max_leading_69s.lock().unwrap();
+                println!(
+                    "New record! Count of leading 0x69 bytes: {}. Hash: {} Input string: {}",
+                    max,
+                    hash.iter().map(|byte| format!("{:02x}", byte)).collect::<String>(),
+                    random_string
+                );
             }
+            Err(_) => {}
         }
-        
     }
-}
-
-fn run_benchmark(amount_of_tries: u128, bech32: bool) {
-    let (sender, receiver) = channel();
-        use std::time::Instant;
-        let filter_string = String::from("impossible");
-
-        let mut start: Instant;
-        let mut total_generation_time: u128 = 0;
-        let mut total_filtering_time: u128 = 0;
-
-        let secp = secp256k1::Secp256k1::new();
-        let mut rng = rand::rngs::OsRng::default();
-        for _ in 0..amount_of_tries {
-            start = Instant::now();
-            let secret_key = secp256k1::SecretKey::new(&mut rng);
-            sender.send(KeyPair::from_secret_key(&secp, &secret_key)).unwrap();
-            total_generation_time += start.elapsed().as_micros();
-        }
-
-        let time_for_generation = total_generation_time / amount_of_tries;
-        
-
-        for _ in 0..amount_of_tries {
-            start = Instant::now();
-            let new_result = receiver.recv();
-            match new_result {
-                Ok(result) => {
-                    let (pubkey_readable, _) = XOnlyPublicKey::from_keypair(&result);
-                    if !bech32 {
-                        if !filter_pubkeys(pubkey_readable.to_string(), filter_string.as_str()) {
-                            total_filtering_time += start.elapsed().as_micros();
-                            continue;
-                        }
-                    }
-                    else {
-                        //Convert to bech32
-                        let bech_key: String = bech32::encode( //Shamefully stolen from https://github.com/grunch/rana/blob/main/src/main.rs in order to add bech32 support
-                            "npub",
-                            hex::decode(pubkey_readable.to_string()).unwrap().to_base32(),
-                            Variant::Bech32,
-                        ).unwrap();
-                        let new_filter_string = format!("npub1{}", filter_string);
-                        if !filter_pubkeys(bech_key, new_filter_string.as_str()) {
-                            total_filtering_time += start.elapsed().as_micros();
-                            continue;
-                        }
-                    }
-                    let _tmp_output = format!("{};{}\n", result.display_secret(), pubkey_readable);
-                },
-                Err(_) => {
-                    sleep(Duration::from_secs(1));
-                }
-            }
-            total_filtering_time += start.elapsed().as_micros();
-        }
-
-        let time_for_filtering = total_filtering_time / amount_of_tries;
-
-        
-        println!("Time for generation: {}µs ({}/{})", time_for_generation, total_generation_time, amount_of_tries);
-        println!("\t{} h/s", 1000000 / time_for_generation);
-        println!("\t\t{} h/s on 12 cores", (1000000 / time_for_generation) * 12);
-        println!("Time for filtering: {}µs ({}/{})", time_for_filtering, total_filtering_time, amount_of_tries);
-        return;
 }
