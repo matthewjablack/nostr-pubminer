@@ -10,6 +10,7 @@ use std::time::Instant;
 
 fn run_thread(sender: Sender<(Vec<u8>, String)>, max_leading_69s: Arc<Mutex<u32>>) {
     let mut rng = thread_rng();
+    let mut previous_instant = Instant::now();
 
     loop {
         // Generate a random alphanumeric string of length 30
@@ -38,8 +39,14 @@ fn run_thread(sender: Sender<(Vec<u8>, String)>, max_leading_69s: Arc<Mutex<u32>
 
         let mut max = max_leading_69s.lock().unwrap();
         if count_69 > *max {
+            let elapsed_time = previous_instant.elapsed();
             *max = count_69;
             sender.send((hash.to_vec(), random_string)).unwrap();
+            println!(
+                "Time elapsed since last record: {:.2?}",
+                elapsed_time
+            );
+            previous_instant = Instant::now();
         }
     }
 }
